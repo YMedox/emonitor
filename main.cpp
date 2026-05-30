@@ -2,7 +2,7 @@
 Сбор параметров электроснабжения по Modbus и отправка их в OpenHAB.
 Использованиа библиотека libmodbus, https://libmodbus.org
 В основном потоке измеряются основные параметры, в дополнительном потоке отправляются данные в OpenHAB.
-Программа поддерживает два типа устройств: PZEM016 и 8-канальный 
+Программа поддерживает два типа устройств: PZEM016 и 8-канальный считыватель аналоговых сигналов
 
 Автор - Ярослав Медокс
 --------------------------------------------------------------------------------------------------------------------------------------*/
@@ -136,7 +136,7 @@ class modbusDevice {
   protected:
     uint16_t _addr;
     const std::string delimiter = ";";
-    bool bLoaded = false;
+    //bool bLoaded = false;
   public:
     virtual void poll(bool bNewDate) {};
     bool connect() {
@@ -170,9 +170,10 @@ class PZEM016 : public modbusDevice {
     PZEM016(char *addr) {
       _addr = atoi(addr);
       logcppinfo<<"Added PZEM016 with address "<<addr<<ENDL;
+      load();
     }
     void load() {
-      std::string line;
+/*      std::string line;
       char *send;
       std::ifstream saved(std::to_string(_addr));
       if (saved.is_open()) {
@@ -184,14 +185,72 @@ class PZEM016 : public modbusDevice {
       } else {
          logcpperror<<"File "<<_addr<<" not opened!"<<ENDL;
       }
-      bLoaded = true;
+      bLoaded = true;*/
+      std::string filename = std::to_string(_addr);
+      std::ifstream file(filename);
+      if (!file.is_open()) {
+          logcppwarn << "No saved data for PZEM016 at address " << _addr << " — starting fresh" << ENDL;
+          return;
+      }
+      std::string line;
+      char *endptr = nullptr;
+      // Читаем ED
+      if (!std::getline(file, line)) {
+          logcpperror << "Failed to read ED from " << filename << ENDL;
+          file.close();
+          return;
+      }
+      ED = strtof(line.c_str(), &endptr);
+      if (endptr == line.c_str() || (*endptr != '\0' && *endptr != '\n')) {
+          logcpperror << "Invalid number format for ED in " << filename << ENDL;
+          file.close();
+          return;
+      }
+      // Читаем ET
+      if (!std::getline(file, line)) {
+          logcpperror << "Failed to read ET from " << filename << ENDL;
+          file.close();
+          return;
+      }
+      ET = strtof(line.c_str(), &endptr);
+      if (endptr == line.c_str() || (*endptr != '\0' && *endptr != '\n')) {
+          logcpperror << "Invalid number format for ET in " << filename << ENDL;
+          file.close();
+          return;
+      }
+      file.close();
+      EO = ET - ED;  // установка смещения
+      file.close();
+      //bLoaded = true;
+      logcppinfo << "PZEM016 loaded: ED=" << ED << ", ET=" << ET << ENDL;
     }
-    virtual void save() {   //деструктор не получилось вызвать, поэтому в CleanUp прямой вызов save
-      if(!bLoaded) return;
-      std::fstream saved(std::to_string(_addr));
+    void save() {   
+      //if(!bLoaded) return;
+/*      std::fstream saved(std::to_string(_addr));
       saved<<ED<<std::endl;
       saved.close();
-      logcppinfo<<"PZEM016 with addr "<<_addr<<" saved data ED="<<ED<<ENDL;
+      logcppinfo<<"PZEM016 with addr "<<_addr<<" saved data ED="<<ED<<ENDL;*/
+      std::string tmpname = std::to_string(_addr) + ".tmp";
+      std::ofstream tmpfile(tmpname);
+      if (!tmpfile.is_open()) {
+          logcpperror << "Cannot create temp file: " << tmpname << ENDL;
+          return;
+      }
+      tmpfile << ED << "\n" << ET << "\n";
+      if (tmpfile.fail()) {
+          logcpperror << "Write failed to temp file " << tmpname << ENDL;
+          tmpfile.close();
+          unlink(tmpname.c_str());
+          return;
+      }
+      tmpfile.close();
+      // Атомарная замена
+      if (rename(tmpname.c_str(), std::to_string(_addr).c_str()) != 0) {
+          logcpperror << "Failed to rename " << tmpname << " to " << _addr << ENDL;
+          unlink(tmpname.c_str());
+          return;
+      }
+      logcppinfo << "PZEM016 saved: ED=" << ED << ", ET=" << ET << ENDL;
     }
     void calcAll() {
       U  = double(tab_reg[0]) * 0.1;
@@ -202,8 +261,9 @@ class PZEM016 : public modbusDevice {
       double factor = double(tab_reg[8]) * 0.01;
       PA =  P / factor;
       ED = ET - EO;      //потреблено за сутки
+      logcppdebug<<"PZEM addr "<<_addr<<" ET="<<ET<<ENDL;
     }
-    virtual void poll(bool bNewDate) {
+    void poll(bool bNewDate) {
       logcppinfo<<"Polling addr "<<_addr<<ENDL;
       if(connect()) {
         if(modbus_read_input_registers(mb, 0, PZEMSIZE, tab_reg) == -1) {
@@ -214,8 +274,8 @@ class PZEM016 : public modbusDevice {
            calcAll(); //избыточно
            EO = ET;   //устанавливаем смещение
            ED = 0;    //сбрасываем суточный счетчик
-           if(bLoaded) save();
-           else        { calcAll(); load(); } //нужно получить ET
+           /*if(bLoaded)*/ save();
+           //else        { calcAll(); load(); } //нужно получить ET
         }
       }
     }
@@ -224,7 +284,7 @@ class PZEM016 : public modbusDevice {
       sprintf(buf, "%0.1f", value);
       return std::string(buf) + delimiter;
     }
-    virtual std::string getReportString() {
+    std::string getReportString() {
       std::string ret = "";
       calcAll();  //нужно вызывать для актуализации параметров и вычисленной энергии
       ret += addValue(U);
@@ -264,8 +324,9 @@ class MBSL8AI : public modbusDevice {
       last = getMillis();
       PInp = POutp = 0;
       logcppinfo<<"Added MBSL8AI with address "<<addr<<ENDL;
+      load();
     }
-    void load() {
+/*    void load() {
       std::string line;
       char *send;
       std::ifstream saved(std::to_string(_addr));
@@ -280,15 +341,75 @@ class MBSL8AI : public modbusDevice {
          logcpperror<<"File "<<_addr<<" not opened!"<<ENDL;
       }
       bLoaded = true;
+    }*/
+    void load() {
+      std::string filename = std::to_string(_addr);
+      std::ifstream file(filename);
+      if (!file.is_open()) {
+          logcppwarn << "No saved data for MBSL8AI at address " << _addr << " — starting fresh" << ENDL;
+          return;
+      }
+      std::string line;
+      char *endptr = nullptr;
+      // Читаем EInp
+      if (!std::getline(file, line)) {
+          logcpperror << "Failed to read EInp from " << filename << ENDL;
+          file.close();
+          return;
+      }
+      EInp = strtod(line.c_str(), &endptr);
+      if (endptr == line.c_str() || (*endptr != '\0' && *endptr != '\n')) {
+          logcpperror << "Invalid number format for EInp in " << filename << ENDL;
+          file.close();
+          return;
+      }
+      // Читаем EOutp
+      if (!std::getline(file, line)) {
+          logcpperror << "Failed to read EOutp from " << filename << ENDL;
+          file.close();
+          return;
+      }
+      EOutp = strtod(line.c_str(), &endptr);
+      if (endptr == line.c_str() || (*endptr != '\0' && *endptr != '\n')) {
+          logcpperror << "Invalid number format for EOutp in " << filename << ENDL;
+          file.close();
+          return;
+      }
+      file.close();
+//      bLoaded = true;
+      logcppinfo << "MBSL8AI loaded: EInp=" << EInp << ", EOutp=" << EOutp << ENDL;
     }
-    virtual void save() {   //деструктор не получилось вызвать, поэтому в CleanUp прямой вызов save
+    void save() {
+      std::string tmpname = std::to_string(_addr) + ".tmp";
+      std::ofstream tmpfile(tmpname);
+      if (!tmpfile.is_open()) {
+          logcpperror << "Cannot create temp file: " << tmpname << ENDL;
+          return;
+      }
+      tmpfile << EInp << "\n" << EOutp << "\n";
+      if (tmpfile.fail()) {
+          logcpperror << "Write failed to temp file " << tmpname << ENDL;
+          tmpfile.close();
+          unlink(tmpname.c_str());
+          return;
+      }
+      tmpfile.close();
+      // Атомарная замена
+      if (rename(tmpname.c_str(), std::to_string(_addr).c_str()) != 0) {
+          logcpperror << "Failed to rename " << tmpname << " to " << _addr << ENDL;
+          unlink(tmpname.c_str());
+          return;
+      }
+      logcppinfo << "MBSL8AI saved: EInp=" << EInp << ", EOutp=" << EOutp << ENDL;
+    }   
+/*    virtual void save() {   //деструктор не получилось вызвать, поэтому в CleanUp прямой вызов save
       if(!bLoaded) return;
       std::fstream saved(std::to_string(_addr));
       saved<<EInp<<std::endl;
       saved<<EOutp<<std::endl;
       saved.close();
       logcppinfo<<"MBSL8AI with addr "<<_addr<<" saved data EInp="<<EInp<<", EOutp="<<EOutp<<ENDL;
-    }
+    }*/
     suseconds_t getMillis() {
       timeval t_v;
       gettimeofday(&t_v, NULL);
@@ -314,7 +435,7 @@ class MBSL8AI : public modbusDevice {
       POutp = UBatt * IOutp;
     }
     void resetE() { EInp = EOutp = 0; };
-    virtual void poll(bool bNewDate) {
+    void poll(bool bNewDate) {
       logcppinfo<<"Polling addr "<<_addr<<ENDL;
       if(connect()) {
         if(modbus_read_input_registers(mb, 0, MBSL8AISIZE, tab_reg) == -1) {
@@ -324,8 +445,8 @@ class MBSL8AI : public modbusDevice {
         calcAll();
         if(bNewDate) {
           resetE();
-          if(bLoaded) save();
-          else        load();
+          /*if(bLoaded)*/ save();
+          //else        load();
         }
       }
     }
@@ -334,7 +455,7 @@ class MBSL8AI : public modbusDevice {
       sprintf(buf, "%0.1f", value);
       return std::string(buf) + delimiter;
     }
-    virtual std::string getReportString() {
+    std::string getReportString() {
       std::string ret = "";
       const double del = 1000;
       ret += addValue(UInp);
@@ -368,7 +489,7 @@ bool checkDate() {
 // Опрашивает устройства
 void pollDevices() {
   bool bNewDate = checkDate();
-  for(int i=0;i<md.size();i++) {
+  for(size_t i=0;i<md.size();i++) {
     md[i]->poll(bNewDate);
     usleep(50000L);
   }
@@ -378,7 +499,7 @@ void pollDevices() {
 void reportDevices() {
   if(repMutex.try_lock()) {
     if(bNewReport == false) repString.erase();
-    for(int i=0;i<md.size();i++) {
+    for(size_t i=0;i<md.size();i++) {
       repString += md[i]->getReportString();
     }
     bNewReport = true;
@@ -428,7 +549,9 @@ void readValues(char *config_file) {
 void cleanUp() {
   for(size_t i=0;i<md.size();i++) {
     md[i]->save();
+    delete md[i];
   }
+  md.clear();
     if(mb) {
       modbus_close(mb);
       modbus_free(mb);
@@ -477,7 +600,8 @@ int main( int argc, char **argv ) {
       bCont.store(false);
     }
     modbus_set_response_timeout(mb, 0, 100000L);
-
+    
+    checkDate(); // проверка даты и времени
     std::thread sOH(sendToOpenHAB); //отдельный поток для отправки данных в openHAB, чтобы не замедлять темп чтения modbus-устройств
     while(bCont.load() == true) {
       timer_loop(false);
