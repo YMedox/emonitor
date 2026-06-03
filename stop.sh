@@ -1,3 +1,4 @@
+#!/bin/bash
 pid=$(pidof emonitor)
 echo $pid
 kill -SIGINT $pid
