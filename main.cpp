@@ -365,9 +365,6 @@ class MBSL8AI : public modbusDevice {
       logcppinfo << "MBSL8AI loaded: EInp=" << EInp << ", EOutp=" << EOutp << ENDL;
     }
     void save() {
-      //if(!save_stepOne()) return;
-      //tmpfile << EInp << "\n" << EOutp << "\n";
-      //if(!save_stepTwo()) return;
       saveData sd(_addr);
       if(sd.save(EInp, EOutp)) logcppinfo << "MBSL8AI saved: EInp=" << EInp << ", EOutp=" << EOutp << ENDL;
     }   
